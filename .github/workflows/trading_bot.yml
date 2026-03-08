@@ -1,35 +1,58 @@
 name: Congressional Trading Bot
 on:
   schedule:
+    # Runs at 9:30 AM EST (14:30 UTC), Mon-Fri
     - cron: '30 14 * * 1-5'
   workflow_dispatch:
+    inputs:
+      manual_buys:
+        description: 'Tickers to screen and BUY (e.g., NVDA,AAPL)'
+        required: false
+        default: ''
+      manual_sales:
+        description: 'Tickers to FORCE SELL (e.g., TSLA)'
+        required: false
+        default: ''
 
 permissions:
-  contents: write
+  contents: write # Allows the bot to update trades_log.csv
 
 jobs:
   trade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          
       - name: Install Dependencies
-        run: pip install -r requirements.txt
-      - name: Run Bot
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py yfinance pandas requests
+          
+      - name: Run Trading Bot
         env:
+          # Alpaca Keys
           APCA_KEY: ${{ secrets.APCA_KEY }}
           APCA_SECRET: ${{ secrets.APCA_SECRET }}
+          # Financial Modeling Prep (Optional/Premium)
           FMP_TOKEN: ${{ secrets.FMP_TOKEN }}
+          # Telegram Notifications
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Manual Inputs from UI
+          MANUAL_BUYS: ${{ github.event.inputs.manual_buys }}
+          MANUAL_SALES: ${{ github.event.inputs.manual_sales }}
         run: python bot.py
-      - name: Commit Log
+
+      - name: Commit and Push Trade Log
         run: |
           git config --global user.name "Congress-Bot"
           git config --global user.email "bot@actions.github.com"
           git add trades_log.csv
-          git commit -m "Update history [skip ci]" || echo "No changes"
-          git push
+          # Only commit if the file actually changed to avoid errors
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update trade history [skip ci]" && git push)

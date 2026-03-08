@@ -1,21 +1,26 @@
 name: Congressional Trading Bot
+
 on:
   schedule:
-    # Runs at 9:30 AM EST (14:30 UTC), Mon-Fri
+    # Runs at 9:30 AM EST (14:30 UTC), Monday through Friday
     - cron: '30 14 * * 1-5'
   workflow_dispatch:
+    # Manual UI Trigger via GitHub Actions Tab
     inputs:
       manual_buys:
-        description: 'Tickers to screen and BUY (e.g., NVDA,AAPL)'
+        description: 'Tickers to screen for BUY (e.g. NVDA,AAPL)'
         required: false
         default: ''
       manual_sales:
-        description: 'Tickers to FORCE SELL (e.g., TSLA)'
+        description: 'Tickers to FORCE SELL (e.g. TSLA)'
         required: false
         default: ''
+  # Trigger for your Telegram Bridge (Repository Dispatch)
+  repository_dispatch:
+    types: [telegram_trigger]
 
 permissions:
-  contents: write # Allows the bot to update trades_log.csv
+  contents: write # Required to update trades_log.csv
 
 jobs:
   trade:
@@ -23,29 +28,28 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install alpaca-py yfinance pandas requests
-          
+          # FIX: This installs everything in your requirements.txt including apify-client
+          pip install -r requirements.txt
+
       - name: Run Trading Bot
         env:
-          # Alpaca Keys
+          # API Keys from GitHub Secrets
           APCA_KEY: ${{ secrets.APCA_KEY }}
           APCA_SECRET: ${{ secrets.APCA_SECRET }}
-          # Financial Modeling Prep (Optional/Premium)
-          FMP_TOKEN: ${{ secrets.FMP_TOKEN }}
-          # Telegram Notifications
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Manual Inputs from UI
-          MANUAL_BUYS: ${{ github.event.inputs.manual_buys }}
+          # Logic to handle Manual UI inputs OR Telegram Bridge inputs
+          MANUAL_BUYS: ${{ github.event.inputs.manual_buys || github.event.client_payload.ticker }}
           MANUAL_SALES: ${{ github.event.inputs.manual_sales }}
         run: python bot.py
 
@@ -54,5 +58,5 @@ jobs:
           git config --global user.name "Congress-Bot"
           git config --global user.email "bot@actions.github.com"
           git add trades_log.csv
-          # Only commit if the file actually changed to avoid errors
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update trade history [skip ci]" && git push)
+          # Only commits if there are actual changes (new trades) to the log
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update history [skip ci]" && git push)

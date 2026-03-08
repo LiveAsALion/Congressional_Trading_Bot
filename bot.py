@@ -3,7 +3,11 @@ import pandas as pd
 import yfinance as yf
 import requests
 from datetime import datetime, timedelta
-from alpaca_trade_api.rest import REST, TimeInForce
+
+# New Alpaca-py imports
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
 
 # --- CONFIGURATION ---
 LOG_FILE = 'trades_log.csv'
@@ -13,7 +17,8 @@ FMP_TOKEN = os.getenv('FMP_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-alpaca = REST(ALPACA_KEY, ALPACA_SECRET, base_url='https://paper-api.alpaca.markets')
+# Initialize Modern Trading Client (Paper=True for testing)
+trading_client = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
 
 def notify(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}"
@@ -37,46 +42,51 @@ def is_passing_magic_momentum(ticker_symbol):
     try:
         t = yf.Ticker(ticker_symbol)
         hist = t.history(period="1y")
-        # Momentum filter
+        if hist.empty: return False
+        
         sma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
         if hist['Close'].iloc[-1] < sma200: return False
         
-        # Magic Formula Proxy
         info = t.info
         ebit = info.get('ebitda', 0)
         ev = info.get('enterpriseValue', 1)
-        return (ebit / ev) > 0.05 # 5% Yield threshold
+        return (ebit / ev) > 0.05 
     except: return False
 
-# --- DATA INGESTION ---
 def get_clusters():
-    # Fetching from Financial Modeling Prep Senate API
     url = f"https://financialmodelingprep.com/api/v3/senate_trading?apikey={FMP_TOKEN}"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data)
-    df['transactionDate'] = pd.to_datetime(df['transactionDate'])
-    recent = df[df['transactionDate'] >= (datetime.now() - timedelta(days=30))]
-    
-    buys = recent[recent['type'].str.contains('Purchase', case=False)]
-    sales = recent[recent['type'].str.contains('Sale', case=False)]
-    
-    # Identify 3+ member clusters
-    buy_list = buys.groupby('symbol')['representative'].nunique()
-    sell_list = sales.groupby('symbol')['representative'].nunique()
-    
-    return buy_list[buy_list >= 3].index.tolist(), sell_list[sell_list >= 3].index.tolist()
+    try:
+        response = requests.get(url)
+        data = response.json()
+        df = pd.DataFrame(data)
+        df['transactionDate'] = pd.to_datetime(df['transactionDate'])
+        recent = df[df['transactionDate'] >= (datetime.now() - timedelta(days=30))]
+        
+        buys = recent[recent['type'].str.contains('Purchase', case=False)]
+        sales = recent[recent['type'].str.contains('Sale', case=False)]
+        
+        buy_list = buys.groupby('symbol')['representative'].nunique()
+        sell_list = sales.groupby('symbol')['representative'].nunique()
+        
+        return buy_list[buy_list >= 3].index.tolist(), sell_list[sell_list >= 3].index.tolist()
+    except Exception as e:
+        notify(f"⚠️ Data Fetch Error: {e}")
+        return [], []
 
 # --- MAIN EXECUTION ---
 def main():
     cluster_buys, cluster_sales = get_clusters()
-    positions = {p.symbol: p.qty for p in alpaca.list_positions()}
+    # Updated: Use get_all_positions() for modern SDK
+    positions = {p.symbol: p.qty for p in trading_client.get_all_positions()}
 
     # 1. PRIORITY: SELL CLUSTER SALES
     for ticker in list(positions.keys()):
         if ticker in cluster_sales:
-            alpaca.submit_order(ticker, qty=positions[ticker], side='sell', type='market')
+            # New order format
+            order_data = MarketOrderRequest(symbol=ticker, qty=positions[ticker], side=OrderSide.SELL, time_in_force=TimeInForce.GTC)
+            trading_client.submit_order(order_data=order_data)
             update_memory(ticker, 'SELL')
-            notify(f"🚨 SOLD: {ticker} (Congressional Cluster Sale detected)")
+            notify(f"🚨 SOLD: {ticker} (Cluster Sale)")
 
     # 2. ANNIVERSARY RE-EVALUATION
     if os.path.exists(LOG_FILE):
@@ -86,19 +96,22 @@ def main():
         
         for _, row in log[log['purchase_date'] <= one_year_ago].iterrows():
             if not is_passing_magic_momentum(row['ticker']):
-                alpaca.submit_order(row['ticker'], qty=row['qty'], side='sell', type='market')
+                order_data = MarketOrderRequest(symbol=row['ticker'], qty=row['qty'], side=OrderSide.SELL, time_in_force=TimeInForce.GTC)
+                trading_client.submit_order(order_data=order_data)
                 update_memory(row['ticker'], 'SELL')
-                notify(f"⏳ SOLD: {row['ticker']} (Failed 1-year Magic Formula review)")
+                notify(f"⏳ SOLD: {row['ticker']} (1yr Review Fail)")
 
     # 3. NEW BUYS (Top 5)
     qualified_buys = [t for t in cluster_buys if t not in positions and is_passing_magic_momentum(t)]
     for ticker in qualified_buys[:5]:
         try:
-            alpaca.submit_order(symbol=ticker, notional=1000, side='buy', type='market', time_in_force='gtc')
-            update_memory(ticker, 'BUY', 0) # Qty will update on next run or via API
-            notify(f"✅ BOUGHT: {ticker} (Cluster Buy + Magic Formula pass)")
+            # Using notional ($1000) for fractional entry
+            order_data = MarketOrderRequest(symbol=ticker, notional=1000, side=OrderSide.BUY, time_in_force=TimeInForce.GTC)
+            trading_client.submit_order(order_data=order_data)
+            update_memory(ticker, 'BUY', 0) 
+            notify(f"✅ BOUGHT: {ticker} (Cluster + Magic Formula Pass)")
         except Exception as e:
-            notify(f"❌ FAILED: {ticker} purchase error: {e}")
+            notify(f"❌ FAILED: {ticker} buy error: {e}")
 
 if __name__ == "__main__":
     main()

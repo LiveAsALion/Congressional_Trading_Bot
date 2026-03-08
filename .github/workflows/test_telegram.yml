@@ -1,0 +1,13 @@
+name: Test Telegram Connection
+on: 
+  workflow_dispatch: # Allows you to click "Run Workflow" manually
+
+jobs:
+  test_ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Test Message
+        run: |
+          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
+            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+            -d text="🚀 GitHub Connection Test: Successful. Your bot is ready for the market open!"
